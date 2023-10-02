@@ -435,6 +435,17 @@ files = [
 plugins = ["importlib-metadata"]
 
 [[package]]
+name = "pygraphviz"
+version = "1.11"
+description = "Python interface to Graphviz"
+category = "main"
+optional = false
+python-versions = ">=3.8"
+files = [
+    {file = "pygraphviz-1.11.zip", hash = "sha256:a97eb5ced266f45053ebb1f2c6c6d29091690503e3a5c14be7f908b37b06f2d4"},
+]
+
+[[package]]
 name = "pytest"
 version = "7.4.2"
 description = "pytest: simple powerful testing with Python"
@@ -535,4 +546,4 @@ files = [
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.11"
-content-hash = "03865eb42c9e24c03ac80911a0438c99ae40e7215beb8550b4fa7b436bc03496"
+content-hash = "9b34fa254c767c1a4b55622f6f65976d92d139aa4203f2fbd6ecdbb26a8ee7f2"
