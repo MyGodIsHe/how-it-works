@@ -13,8 +13,11 @@ def cli():
 
 @click.command()
 def worker():
-    asyncio.run(workers.worker())
+    w = workers.Worker1()
+    w.run()
+    asyncio.run(workers.Worker2().run())
 
 
 if __name__ == '__main__':
     cli()
+    worker()

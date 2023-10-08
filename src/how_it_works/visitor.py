@@ -7,6 +7,7 @@ from importlib.util import find_spec
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
+SyncAsyncFuncDef = ast.FunctionDef | ast.AsyncFunctionDef
 
 
 class Visitor(ast.NodeVisitor):
@@ -60,24 +61,36 @@ class Visitor(ast.NodeVisitor):
             name = name[:-2]
         return name
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> Any:
-        self.alias[node.name] = Alias(
-            full_name=f'{self.target}.{node.name}',
-            lazy_visitor=lambda: self.real_visit_def(node),
-        )
+    def visit_ClassDef(self, node: ast.ClassDef) -> Any:
+        self.alias[node.name] = Alias(full_name=f'{self.target}.{node.name}')
         for item in node.decorator_list:
             if isinstance(item, ast.AST):
                 self.visit(item)
+        for sub_node in node.body:
+            with self.ctx(node.name):
+                self.visit(sub_node)
 
-    def real_visit_def(self, node: ast.FunctionDef) -> None:
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> Any:
+        self.visit_sync_async_func_def(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> Any:
+        # TODO: учитывать await
+        self.visit_sync_async_func_def(node)
+
+    def real_visit_func_def(self, node: SyncAsyncFuncDef) -> None:
         with self.ctx(node.name):
             for item in node.body:
                 if isinstance(item, ast.AST):
                     self.visit(item)
 
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> Any:
-        # TODO: учитывать await
-        self.visit_FunctionDef(node)
+    def visit_sync_async_func_def(self, node: SyncAsyncFuncDef) -> None:
+        self.alias[node.name] = Alias(
+            full_name=f'{self.target}.{node.name}',
+            lazy_visitor=lambda: self.real_visit_func_def(node),
+        )
+        for item in node.decorator_list:
+            if isinstance(item, ast.AST):
+                self.visit(item)
 
     def visit_Call(self, node: ast.Call) -> Any:
         call_target = None
@@ -85,24 +98,21 @@ class Visitor(ast.NodeVisitor):
             case ast.Attribute:
                 match type(node.func.value):
                     case ast.Name:
-                        alias = self.alias.get(node.func.value.id)
-                        if alias:
-                            if alias.lazy_visitor:
-                                alias.lazy_visitor()
-                            call_target = alias.full_name
-                        else:
-                            call_target = node.func.value.id
+                        call_target = self.get_alias_and_call(node.func.value.id)
                         call_target = f'{call_target}.{node.func.attr}'
             case ast.Name:
-                call_target = f'{node.func.id}'
-                alias = self.alias.get(call_target)
-                if alias:
-                    if alias.lazy_visitor:
-                        alias.lazy_visitor()
-                    call_target = alias.full_name
+                call_target = self.get_alias_and_call(node.func.id)
         if call_target:
             self.calls.append(Call(ctx=self.ctx.current, target=call_target))
         self.generic_visit(node)
+
+    def get_alias_and_call(self, alias_name: str) -> str:
+        alias = self.alias.get(alias_name)
+        if alias:
+            if alias.lazy_visitor:
+                alias.lazy_visitor()
+            return alias.full_name
+        return alias_name
 
 
 @dataclass
@@ -168,6 +178,7 @@ def _visit(name: str, path: str = None, import_depth: int = 0, max_depth: int = 
             source = f.read()
         v = Visitor(name, import_depth, max_depth)
         tree = ast.parse(source, path)
+        # print(ast.dump(tree, indent=2))
         v.visit(tree)
         return v
 

@@ -27,7 +27,6 @@ def main(src: str, endpoint: str, max_depth: int, verbose: bool, dry_run: bool) 
 
     if not dry_run:
         to_dot.render(graph)
-    # print(ast.dump(tree, indent=2))
 
 
 if __name__ == '__main__':
