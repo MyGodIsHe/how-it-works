@@ -1,30 +1,34 @@
 import logging
-from collections import defaultdict
-from pathlib import Path
+import sys
 
 import click
+import networkx as nx
 
-from how_it_works import graph, to_dot, visitor
+from how_it_works import to_dot, visitor
 
 
 @click.command()
-@click.option('--root', required=True)
-@click.option('--entry-point', required=True)
+@click.option('--src', help='root dir of source code')
+@click.option('--endpoint', required=True, help='import path')
+@click.option('--max-depth', type=int, default=0)
 @click.option('--verbose', '-v', is_flag=True)
-def main(root: str, entry_point: str, verbose: bool) -> None:
+@click.option('--dry-run', is_flag=True)
+def main(src: str, endpoint: str, max_depth: int, verbose: bool, dry_run: bool) -> None:
+    logging.basicConfig(format='')
     if verbose:
-        logging.basicConfig(format='')
         visitor.logger.setLevel(logging.INFO)
 
-    full_path = Path(root) / entry_point
-    parts = list(Path(entry_point).parts)
-    if len(parts):
-        parts[-1] = Path(parts[-1]).stem
-    calls = defaultdict(list)
-    for c in visitor.visit('.'.join(parts), str(full_path)):
-        calls[c.ctx].append(c.target)
+    if src:
+        sys.path.append(src)
 
-    ntx = graph.parse(calls)
-    graph.remove_hyper_connect(ntx)
-    to_dot.render(ntx)
+    graph = nx.DiGraph()
+    for c in visitor.visit(endpoint, max_depth):
+        graph.add_edge(c.ctx, c.target)
+
+    if not dry_run:
+        to_dot.render(graph)
     # print(ast.dump(tree, indent=2))
+
+
+if __name__ == '__main__':
+    main()

@@ -1,37 +1,57 @@
 import ast
 import logging
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib.machinery import ExtensionFileLoader
 from importlib.util import find_spec
-from typing import Any
-
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
 
 class Visitor(ast.NodeVisitor):
-    imports: set[str] = set()
+    visits: dict[str, 'Visitor | None'] = {}
 
-    def __init__(self, target: str, depth) -> None:
+    def __init__(self, target: str, depth: int, max_depth: int) -> None:
         self.calls: list[Call] = []
         self.ctx = CallContext(target)
         self.target = target
         self.depth = depth
+        self.max_depth = max_depth
+        self.alias: dict[str, Alias] = {}
 
     def visit_Import(self, node: ast.Import) -> Any:
         for n in node.names:
-            import_path = self.fix_import(n.name)
-            if import_path not in self.imports:
-                self.imports.add(import_path)
-                self.calls.extend(visit(import_path, depth=self.depth + 1))
+            self.add_import(n.name, n.asname)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> Any:
         for n in node.names:
-            import_path = self.fix_import(f'{node.module or self.target}.{n.name}')
-            if import_path not in self.imports:
-                self.imports.add(import_path)
-                self.calls.extend(visit(import_path, depth=self.depth + 1))
+            self.add_import(f'{node.module or self.target}.{n.name}', n.asname)
+
+    def add_import(self, name: str, asname: str | None) -> None:
+        """
+        Добавить псевдонимы и посетить модуль
+        """
+        import_path = name
+        if import_path.startswith('.'):
+            import_path = f'{self.target}.{import_path}'
+
+        is_duck = import_path.endswith('*')
+        if is_duck:
+            import_path = import_path[:-2]
+        else:
+            self.alias[asname or name] = Alias(full_name=import_path)
+
+        if import_path in self.visits:
+            v = self.visits[import_path]
+        else:
+            self.visits[import_path] = None  # import cycle protect
+            v = _visit(import_path, import_depth=self.depth + 1, max_depth=self.max_depth)
+            self.visits[import_path] = v
+        if v:
+            self.calls.extend(v.calls)
+            if is_duck:
+                self.alias.update(v.alias)
 
     def fix_import(self, name: str) -> str:
         if name.startswith('.'):
@@ -41,9 +61,15 @@ class Visitor(ast.NodeVisitor):
         return name
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> Any:
+        self.alias[node.name] = Alias(
+            full_name=f'{self.target}.{node.name}',
+            lazy_visitor=lambda: self.real_visit_def(node),
+        )
         for item in node.decorator_list:
             if isinstance(item, ast.AST):
                 self.visit(item)
+
+    def real_visit_def(self, node: ast.FunctionDef) -> None:
         with self.ctx(node.name):
             for item in node.body:
                 if isinstance(item, ast.AST):
@@ -54,15 +80,28 @@ class Visitor(ast.NodeVisitor):
         self.visit_FunctionDef(node)
 
     def visit_Call(self, node: ast.Call) -> Any:
+        call_target = None
         match type(node.func):
             case ast.Attribute:
                 match type(node.func.value):
                     case ast.Name:
-                        call_target = f'{node.func.value.id}.{node.func.attr}'
-                        self.calls.append(Call(ctx=self.ctx.current, target=call_target))
+                        alias = self.alias.get(node.func.value.id)
+                        if alias:
+                            if alias.lazy_visitor:
+                                alias.lazy_visitor()
+                            call_target = alias.full_name
+                        else:
+                            call_target = node.func.value.id
+                        call_target = f'{call_target}.{node.func.attr}'
             case ast.Name:
                 call_target = f'{node.func.id}'
-                self.calls.append(Call(ctx=self.ctx.current, target=call_target))
+                alias = self.alias.get(call_target)
+                if alias:
+                    if alias.lazy_visitor:
+                        alias.lazy_visitor()
+                    call_target = alias.full_name
+        if call_target:
+            self.calls.append(Call(ctx=self.ctx.current, target=call_target))
         self.generic_visit(node)
 
 
@@ -81,7 +120,7 @@ class CallContext:
 
     @property
     def current(self) -> str:
-        return self.stack[-1]
+        return '.'.join(self.stack)
 
     @contextmanager
     def __call__(self, target: str):
@@ -90,31 +129,47 @@ class CallContext:
         self.stack.pop()
 
 
-def visit(name: str, path: str = None, depth: int = 0) -> list[Call]:
-    if name == '__main__':
+@dataclass
+class Alias:
+    full_name: str
+    lazy_visitor: Callable[[], None] | None = field(default=None)
+
+
+def visit(name: str, max_depth: int) -> list[Call]:
+    v = _visit(name, max_depth=max_depth)
+    if v is None:
         return []
+    return v.calls
+
+
+def _visit(name: str, path: str = None, import_depth: int = 0, max_depth: int = 0) -> Visitor | None:
+    if 0 < max_depth < import_depth:
+        return None
+
+    if name == '__main__':
+        return None
 
     if path is None:
         try:
             spec = find_spec(name)
         except ModuleNotFoundError:
-            return []
+            return None
         if spec is None:
-            return []
+            return None
         if isinstance(spec.loader, ExtensionFileLoader):
-            return []
+            return None
         path = spec.origin
 
     if path in ('built-in', 'frozen'):
-        return []
+        return None
 
-    with log_visit(depth, name):
+    with log_visit(import_depth, name):
         with open(path, 'r') as f:
             source = f.read()
-        v = Visitor(name, depth)
+        v = Visitor(name, import_depth, max_depth)
         tree = ast.parse(source, path)
         v.visit(tree)
-        return v.calls
+        return v
 
 
 @contextmanager

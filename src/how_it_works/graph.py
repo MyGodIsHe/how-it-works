@@ -2,18 +2,14 @@ import networkx as nx
 
 
 def parse(data: dict) -> nx.DiGraph:
-    nt = nx.DiGraph()
+    graph = nx.DiGraph()
 
-    def _ensure_key(name):
-        if name not in nt:
-            nt.add_node(name, size=50)
+    for node, children in data.items():
+        graph.add_node(node)
+        for child in children:
+            graph.add_edge(node, child)
 
-    for node in data:
-        _ensure_key(node)
-        for child in data[node]:
-            _ensure_key(child)
-            nt.add_edge(node, child)
-    return nt
+    return graph
 
 
 def remove_hyper_connect(ntx: nx.DiGraph, threshold=5) -> None:

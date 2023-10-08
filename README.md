@@ -1,6 +1,6 @@
 # Запуск
 
 ```bash
-how-it-works --root tests --entry-point sample_app/cli.py > calls.dot
+how-it-works --src tests --endpoint sample_app.cli > calls.dot
 dot -Tsvg calls.dot > calls.svg
 ```
