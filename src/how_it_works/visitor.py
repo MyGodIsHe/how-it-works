@@ -10,11 +10,21 @@ logger = logging.getLogger(__name__)
 SyncAsyncFuncDef = ast.FunctionDef | ast.AsyncFunctionDef
 
 
+@dataclass(frozen=True)
+class Call:
+    ctx: str
+    target: str
+
+    def __str__(self) -> str:
+        return f'{self.ctx} -> {self.target}'
+
+
 class Visitor(ast.NodeVisitor):
-    visits: dict[str, 'Visitor | None'] = {}
+    import_def_visits: dict[str, 'Visitor | None'] = {}
+    calls: list[Call] = []
+    inside_import = False
 
     def __init__(self, target: str, depth: int, max_depth: int) -> None:
-        self.calls: list[Call] = []
         self.ctx = CallContext(target)
         self.target = target
         self.depth = depth
@@ -23,36 +33,37 @@ class Visitor(ast.NodeVisitor):
 
     def visit_Import(self, node: ast.Import) -> Any:
         for n in node.names:
-            self.add_import(n.name, n.name or n.asname)
+            object_dot_path = self.get_absolute_path(n.name)
+            self.alias[n.name or n.asname] = Alias(full_name=object_dot_path)
+            self.real_visit_import(n.name)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> Any:
         for n in node.names:
-            self.add_import(f'{node.module or self.target}.{n.name}', n.name or n.asname)
-
-    def add_import(self, name: str, alias_name: str) -> None:
-        """
-        Добавить псевдонимы и посетить модуль
-        """
-        import_path = name
-        if import_path.startswith('.'):
-            import_path = f'{self.target}.{import_path}'
-
-        is_duck = import_path.endswith('*')
-        if is_duck:
-            import_path = import_path[:-2]
-        else:
-            self.alias[alias_name] = Alias(full_name=import_path)
-
-        if import_path in self.visits:
-            v = self.visits[import_path]
-        else:
-            self.visits[import_path] = None  # import cycle protect
-            v = _visit(import_path, import_depth=self.depth + 1, max_depth=self.max_depth)
-            self.visits[import_path] = v
-        if v:
-            self.calls.extend(v.calls)
-            if is_duck:
+            object_dot_path = self.get_absolute_path(f'{node.module or self.target}.{n.name}')
+            is_duck = n.name == '*'
+            if not is_duck:
+                self.alias[n.name or n.asname] = Alias(full_name=object_dot_path)
+            v = self.real_visit_import(object_dot_path)
+            if is_duck and v:
                 self.alias.update(v.alias)
+
+    def real_visit_import(self, module_dot_path: str) -> 'Visitor | None':
+        module_path, module_dot_path = get_module_path(module_dot_path)
+        if module_path is None:
+            return None
+        if module_dot_path in self.import_def_visits:
+            v = self.import_def_visits[module_dot_path]
+        else:
+            self.import_def_visits[module_dot_path] = None  # import cycle protect
+            with self.mark_import():
+                v = _visit(module_dot_path, module_path, self.max_depth, self.depth + 1)
+            self.import_def_visits[module_dot_path] = v
+        return v
+
+    def get_absolute_path(self, module_dot_path: str) -> str:
+        if module_dot_path.startswith('.'):
+            return f'{self.target}.{module_dot_path}'
+        return module_dot_path
 
     def fix_import(self, name: str) -> str:
         if name.startswith('.'):
@@ -68,6 +79,8 @@ class Visitor(ast.NodeVisitor):
                 self.visit(item)
         for sub_node in node.body:
             with self.ctx(node.name):
+                if self.ctx.is_cyclic:
+                    return
                 self.visit(sub_node)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> Any:
@@ -79,6 +92,8 @@ class Visitor(ast.NodeVisitor):
 
     def real_visit_func_def(self, node: SyncAsyncFuncDef) -> None:
         with self.ctx(node.name):
+            if self.ctx.is_cyclic:
+                return
             for item in node.body:
                 if isinstance(item, ast.AST):
                     self.visit(item)
@@ -98,30 +113,32 @@ class Visitor(ast.NodeVisitor):
             case ast.Attribute:
                 match type(node.func.value):
                     case ast.Name:
-                        call_target = self.get_alias_and_call(node.func.value.id)
-                        call_target = f'{call_target}.{node.func.attr}'
+                        instance_alias = self.get_alias_and_visit_call(node.func.value.id, skip_call=True)
+                        # нужно asyncio.run транслировать как-то в asyncio.main.run
+                        # self.get_absolute_path(f'{instance_alias}.{node.func.attr}')
+                        call_target = self.get_alias_and_visit_call(f'{instance_alias}.{node.func.attr}')
             case ast.Name:
-                call_target = self.get_alias_and_call(node.func.id)
-        if call_target:
-            self.calls.append(Call(ctx=self.ctx.current, target=call_target))
+                call_target = self.get_alias_and_visit_call(node.func.id)
+        if call_target and not self.inside_import:
+            call = Call(ctx=self.ctx.current, target=call_target)
+            self.calls.append(call)
         self.generic_visit(node)
 
-    def get_alias_and_call(self, alias_name: str) -> str:
+    def get_alias_and_visit_call(self, alias_name: str, skip_call: bool = False) -> str:
         alias = self.alias.get(alias_name)
         if alias:
-            if alias.lazy_visitor:
+            if not skip_call and alias.lazy_visitor:
                 alias.lazy_visitor()
             return alias.full_name
         return alias_name
 
-
-@dataclass
-class Call:
-    ctx: str
-    target: str
-
-    def __str__(self) -> str:
-        return f'{self.ctx} -> {self.target}'
+    @classmethod
+    @contextmanager
+    def mark_import(cls):
+        prev = cls.inside_import
+        cls.inside_import = True
+        yield
+        cls.inside_import = prev
 
 
 class CallContext:
@@ -131,6 +148,10 @@ class CallContext:
     @property
     def current(self) -> str:
         return '.'.join(self.stack)
+
+    @property
+    def is_cyclic(self) -> bool:
+        return self.stack[-1] in self.stack[:-1] if self.stack else False
 
     @contextmanager
     def __call__(self, target: str):
@@ -146,31 +167,18 @@ class Alias:
 
 
 def visit(name: str, max_depth: int) -> list[Call]:
-    v = _visit(name, max_depth=max_depth)
+    module_path, name = get_module_path(name)
+    if module_path is None:
+        # TODO: print cli error
+        return []
+    v = _visit(name, module_path, max_depth)
     if v is None:
         return []
     return v.calls
 
 
-def _visit(name: str, path: str = None, import_depth: int = 0, max_depth: int = 0) -> Visitor | None:
+def _visit(name: str, path: str, max_depth: int, import_depth: int = 0) -> Visitor | None:
     if 0 < max_depth < import_depth:
-        return None
-
-    if name == '__main__':
-        return None
-
-    if path is None:
-        try:
-            spec = find_spec(name)
-        except ModuleNotFoundError:
-            return None
-        if spec is None:
-            return None
-        if isinstance(spec.loader, ExtensionFileLoader):
-            return None
-        path = spec.origin
-
-    if path in ('built-in', 'frozen'):
         return None
 
     with log_visit(import_depth, name):
@@ -189,3 +197,30 @@ def log_visit(depth: int, name: str):
     logger.info(f'{offset}v {name}')
     yield
     logger.info(f'{offset}^ {name}')
+
+
+def get_module_path(name: str) -> tuple[str | None, str]:
+    if name == '__main__':
+        return None, name
+
+    while True:
+        try:
+            spec = find_spec(name)
+            break
+        except ModuleNotFoundError:
+            n = name.rfind('.')
+            if n == -1:
+                # maybe need raise
+                return None, name
+            name = name[:n]
+
+    if spec is None:
+        return None, name
+    if isinstance(spec.loader, ExtensionFileLoader):
+        return None, name
+    path = spec.origin
+
+    if path in ('built-in', 'frozen'):
+        return None, name
+
+    return path, name
