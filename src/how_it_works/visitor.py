@@ -23,13 +23,13 @@ class Visitor(ast.NodeVisitor):
 
     def visit_Import(self, node: ast.Import) -> Any:
         for n in node.names:
-            self.add_import(n.name, n.asname)
+            self.add_import(n.name, n.name or n.asname)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> Any:
         for n in node.names:
-            self.add_import(f'{node.module or self.target}.{n.name}', n.asname)
+            self.add_import(f'{node.module or self.target}.{n.name}', n.name or n.asname)
 
-    def add_import(self, name: str, asname: str | None) -> None:
+    def add_import(self, name: str, alias_name: str) -> None:
         """
         Добавить псевдонимы и посетить модуль
         """
@@ -41,7 +41,7 @@ class Visitor(ast.NodeVisitor):
         if is_duck:
             import_path = import_path[:-2]
         else:
-            self.alias[asname or name] = Alias(full_name=import_path)
+            self.alias[alias_name] = Alias(full_name=import_path)
 
         if import_path in self.visits:
             v = self.visits[import_path]
