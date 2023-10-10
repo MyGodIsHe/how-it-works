@@ -31,6 +31,12 @@ class Visitor(ast.NodeVisitor):
         self.max_depth = max_depth
         self.alias: dict[str, Alias] = {}
 
+    @classmethod
+    def clear(cls) -> None:
+        cls.import_def_visits = {}
+        cls.calls = []
+        cls.inside_import = False
+
     def visit_Import(self, node: ast.Import) -> Any:
         for n in node.names:
             object_dot_path = self.get_absolute_path(n.name)
