@@ -6,6 +6,12 @@ from importlib.machinery import ExtensionFileLoader
 from importlib.util import find_spec
 from typing import Any, Callable
 
+from how_it_works.obj_info import ObjInfo
+from how_it_works.scope import ImportScope
+from how_it_works.scope_manager import ScopeManager
+from how_it_works.tree_tools import analyze_func_def, analyze_import
+from how_it_works.utils import get_path_from_absolute_name, load_tree
+
 logger = logging.getLogger(__name__)
 SyncAsyncFuncDef = ast.FunctionDef | ast.AsyncFunctionDef
 
@@ -172,15 +178,38 @@ class Alias:
     lazy_visitor: Callable[[], None] | None = field(default=None)
 
 
-def visit(name: str, max_depth: int) -> list[Call]:
-    module_path, name = get_module_path(name)
-    if module_path is None:
-        # TODO: print cli error
-        return []
-    v = _visit(name, module_path, max_depth)
-    if v is None:
-        return []
-    return v.calls
+def visit(absolute_name: str, max_depth: int) -> list[Call]:
+    sm = ScopeManager()
+    path = get_path_from_absolute_name(absolute_name)
+    tree = load_tree(path)
+    sm.enter_to_child_scope(ObjInfo(
+        absolute_name=absolute_name,
+        node=tree,
+    ))
+    with sm.current:
+        node = sm.current.get_next_node()
+        if node is None:
+            sm.exit_from_current_scope()
+        match type(node):
+            case ast.Import:
+                info = analyze_import(node)
+                if info.is_star:
+                    ...  # sm.after_exit_add_names()
+                else:
+                    sm.current.add_obj_info(info)
+                sm.enter_to_child_scope(ImportScope(info))
+            case ast.ImportFrom:
+                info = analyze_import(node)
+                sm.current.add_obj_info(info)
+                sm.enter_to_child_scope(ImportScope(info))
+            case ast.FunctionDef, ast.AsyncFunctionDef:
+                info = analyze_func_def(node)
+                sm.current.add_obj_info(info)
+            case ast.ClassDef:
+                pass
+            case ast.Call:
+                info = sm.current.get_obj_info(node)
+                sm.enter_to_child_scope(info)
 
 
 def _visit(name: str, path: str, max_depth: int, import_depth: int = 0) -> Visitor | None:
