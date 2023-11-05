@@ -40,7 +40,9 @@ class Visitor(ast.NodeVisitor):
     def visit_Import(self, node: ast.Import) -> Any:
         for n in node.names:
             object_dot_path = self.get_absolute_path(n.name)
-            self.alias[n.name or n.asname] = Alias(full_name=object_dot_path)
+            alias = n.name or n.asname
+            assert alias is not None
+            self.alias[alias] = Alias(full_name=object_dot_path)
             self.real_visit_import(n.name)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> Any:
@@ -48,7 +50,9 @@ class Visitor(ast.NodeVisitor):
             object_dot_path = self.get_absolute_path(f'{node.module or self.target}.{n.name}')
             is_duck = n.name == '*'
             if not is_duck:
-                self.alias[n.name or n.asname] = Alias(full_name=object_dot_path)
+                alias = n.name or n.asname
+                assert alias is not None
+                self.alias[alias] = Alias(full_name=object_dot_path)
             v = self.real_visit_import(object_dot_path)
             if is_duck and v:
                 self.alias.update(v.alias)
@@ -115,16 +119,14 @@ class Visitor(ast.NodeVisitor):
 
     def visit_Call(self, node: ast.Call) -> Any:
         call_target = None
-        match type(node.func):
-            case ast.Attribute:
-                match type(node.func.value):
-                    case ast.Name:
-                        instance_alias = self.get_alias_and_visit_call(node.func.value.id, skip_call=True)
-                        # нужно asyncio.run транслировать как-то в asyncio.main.run
-                        # self.get_absolute_path(f'{instance_alias}.{node.func.attr}')
-                        call_target = self.get_alias_and_visit_call(f'{instance_alias}.{node.func.attr}')
-            case ast.Name:
-                call_target = self.get_alias_and_visit_call(node.func.id)
+        if isinstance(node.func, ast.Attribute):
+            if isinstance(node.func.value, ast.Name):
+                instance_alias = self.get_alias_and_visit_call(node.func.value.id, skip_call=True)
+                # нужно asyncio.run транслировать как-то в asyncio.main.run
+                # self.get_absolute_path(f'{instance_alias}.{node.func.attr}')
+                call_target = self.get_alias_and_visit_call(f'{instance_alias}.{node.func.attr}')
+        if isinstance(node.func, ast.Name):
+            call_target = self.get_alias_and_visit_call(node.func.id)
         if call_target and not self.inside_import:
             call = Call(ctx=self.ctx.current, target=call_target)
             self.calls.append(call)

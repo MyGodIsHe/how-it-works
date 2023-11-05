@@ -12,12 +12,11 @@ how-it-works = "how_it_works.cli:main"
 python = "^3.11"
 pyvis = "^0.3.2"
 click = "^8.1.7"
-networkx = "^3.1"
+networkx = "^3.2.1"
 pygraphviz = "^1.11"
 
-
 [tool.poetry.group.dev.dependencies]
-pytest = "^7.4.2"
+ipykernel = "^6.26.0"
 
 [build-system]
 requires = ["poetry-core"]
