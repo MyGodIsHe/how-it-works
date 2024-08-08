@@ -27,4 +27,4 @@ def run(request) -> Callable[[str, str], dict]:
 
         return edges
 
-    yield runner
+    return runner

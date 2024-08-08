@@ -101,7 +101,8 @@ class Visitor(ast.NodeVisitor):
         self.visit_sync_async_func_def(node)
 
     def real_visit_func_def(self, node: SyncAsyncFuncDef) -> None:
-        with self.ctx(node.name):
+        alias = self.alias.get(node.name)
+        with self.ctx(alias.full_name):
             if self.ctx.is_cyclic:
                 return
             for item in node.body:
@@ -155,7 +156,7 @@ class CallContext:
 
     @property
     def current(self) -> str:
-        return '.'.join(self.stack)
+        return self.stack[-1]
 
     @property
     def is_cyclic(self) -> bool:
@@ -194,7 +195,6 @@ def _visit(name: str, path: str, max_depth: int, import_depth: int = 0) -> Visit
             source = f.read()
         v = Visitor(name, import_depth, max_depth)
         tree = ast.parse(source, path)
-        # print(ast.dump(tree, indent=2))
         v.visit(tree)
         return v
 
