@@ -8,7 +8,7 @@ from how_it_works import to_dot, visitor
 
 
 @click.command()
-@click.option('--src', help='root dir of source code')
+@click.option('--src', required=True, help='root dir of source code')
 @click.option('--endpoint', required=True, help='import path')
 @click.option('--max-depth', type=int, default=0)
 @click.option('--verbose', '-v', is_flag=True)
@@ -18,11 +18,8 @@ def main(src: str, endpoint: str, max_depth: int, verbose: bool, dry_run: bool) 
     if verbose:
         visitor.logger.setLevel(logging.INFO)
 
-    if src:
-        sys.path.append(src)
-
     graph = nx.DiGraph()
-    for c in visitor.visit(endpoint, max_depth):
+    for c in visitor.visit(src, endpoint, max_depth):
         graph.add_edge(c.ctx, c.target)
 
     if not dry_run:

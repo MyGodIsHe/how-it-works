@@ -16,14 +16,10 @@ def run(request) -> Callable[[str, str], dict]:
         visitor.logger.setLevel(logging.INFO)
         absolute_src_path = str(Path(dirname(request.node.fspath)) / src)
 
-        sys.path.append(absolute_src_path)
-
         edges = set()
         visitor.Visitor.clear()
-        for c in visitor.visit(endpoint, 0):
+        for c in visitor.visit(absolute_src_path, endpoint, 0):
             edges.add(f'{c.ctx} -> {c.target}')
-
-        sys.path.remove(absolute_src_path)
 
         return edges
 

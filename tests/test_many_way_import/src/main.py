@@ -1,4 +1,4 @@
-from m1 import f1
+import m1
 
 
-f1()
+m1.f1()

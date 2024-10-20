@@ -1,5 +1,7 @@
 import ast
 import logging
+from pathlib import Path
+import sys
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from importlib.machinery import ExtensionFileLoader
@@ -19,13 +21,20 @@ class Call:
         return f'{self.ctx} -> {self.target}'
 
 
+@dataclass
+class Alias:
+    full_name: str
+    lazy_visitor: Callable[[], None] | None = field(default=None)
+
+
 class Visitor(ast.NodeVisitor):
     import_def_visits: dict[str, 'Visitor | None'] = {}
     calls: list[Call] = []
     inside_import = False
 
-    def __init__(self, target: str, depth: int, max_depth: int) -> None:
+    def __init__(self, pwd: str, target: str, depth: int, max_depth: int) -> None:
         self.ctx = CallContext(target)
+        self.pwd = pwd
         self.target = target
         self.depth = depth
         self.max_depth = max_depth
@@ -43,7 +52,13 @@ class Visitor(ast.NodeVisitor):
             alias = n.name or n.asname
             assert alias is not None
             self.alias[alias] = Alias(full_name=object_dot_path)
-            self.real_visit_import(n.name)
+            v = self.real_visit_import(n.name)
+            if v:
+                for k, v in v.alias.items():
+                    self.alias[f'{n.name}.{k}'] = Alias(
+                        full_name=f'{n.name}.{v.full_name}',
+                        lazy_visitor=v.lazy_visitor,
+                    )
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> Any:
         for n in node.names:
@@ -53,21 +68,27 @@ class Visitor(ast.NodeVisitor):
                 alias = n.name or n.asname
                 assert alias is not None
                 self.alias[alias] = Alias(full_name=object_dot_path)
-            v = self.real_visit_import(object_dot_path)
+            v = self.real_visit_import(node.module)
             if is_duck and v:
                 self.alias.update(v.alias)
-            if v:
-                for sa in self.alias:
-                    for va in v.alias:
-                        if sa == va:
-                            vv = v.alias[va]
-                            self.alias[sa] = Alias(
-                                full_name=self.alias[sa].full_name.replace(sa, vv.full_name),
-                                lazy_visitor=vv.lazy_visitor,
-                            )
+                for t in v.alias:
+                    self.exted_import_path(v.alias, t)
+            elif v:
+                self.exted_import_path(v.alias, n.name)
 
-    def real_visit_import(self, module_dot_path: str) -> 'Visitor | None':
-        module_path, module_dot_path = get_module_path(module_dot_path)
+    def exted_import_path(self, inner_alias: dict[str, Alias], target: str) -> str:
+        inner = inner_alias.get(target)
+        current = self.alias.get(target)
+        if inner and current and inner.full_name != current.full_name:
+            self.alias[target] = Alias(
+                full_name=current.full_name.replace(target, inner.full_name),
+                lazy_visitor=inner.lazy_visitor,
+            )
+
+    def real_visit_import(self, module_dot_path: str | None) -> 'Visitor | None':
+        if module_dot_path is None:
+            return None
+        module_path, module_dot_path = get_module_path(self.pwd, module_dot_path)
         if module_path is None:
             return None
         if module_dot_path in self.import_def_visits:
@@ -178,14 +199,8 @@ class CallContext:
         self.stack.pop()
 
 
-@dataclass
-class Alias:
-    full_name: str
-    lazy_visitor: Callable[[], None] | None = field(default=None)
-
-
-def visit(name: str, max_depth: int) -> list[Call]:
-    module_path, name = get_module_path(name)
+def visit(pwd: str, name: str, max_depth: int) -> list[Call]:
+    module_path, name = get_module_path(pwd, name)
     if module_path is None:
         # TODO: print cli error
         return []
@@ -202,7 +217,7 @@ def _visit(name: str, path: str, max_depth: int, import_depth: int = 0) -> Visit
     with log_visit(import_depth, name):
         with open(path, 'r') as f:
             source = f.read()
-        v = Visitor(name, import_depth, max_depth)
+        v = Visitor(str(Path(path).parent), name, import_depth, max_depth)
         tree = ast.parse(source, path)
         v.visit(tree)
         return v
@@ -216,12 +231,13 @@ def log_visit(depth: int, name: str):
     logger.info(f'{offset}^ {name}')
 
 
-def get_module_path(name: str) -> tuple[str | None, str]:
+def get_module_path(pwd: str, name: str) -> tuple[str | None, str]:
     if name == '__main__':
         return None, name
 
     while True:
         try:
+            sys.path.insert(0, pwd)
             spec = find_spec(name)
             break
         except ModuleNotFoundError:
@@ -230,6 +246,8 @@ def get_module_path(name: str) -> tuple[str | None, str]:
                 # maybe need raise
                 return None, name
             name = name[:n]
+        finally:
+            sys.path.pop(0)
 
     if spec is None:
         return None, name
