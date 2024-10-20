@@ -56,6 +56,15 @@ class Visitor(ast.NodeVisitor):
             v = self.real_visit_import(object_dot_path)
             if is_duck and v:
                 self.alias.update(v.alias)
+            if v:
+                for sa in self.alias:
+                    for va in v.alias:
+                        if sa == va:
+                            vv = v.alias[va]
+                            self.alias[sa] = Alias(
+                                full_name=self.alias[sa].full_name.replace(sa, vv.full_name),
+                                lazy_visitor=vv.lazy_visitor,
+                            )
 
     def real_visit_import(self, module_dot_path: str) -> 'Visitor | None':
         module_path, module_dot_path = get_module_path(module_dot_path)
@@ -64,7 +73,7 @@ class Visitor(ast.NodeVisitor):
         if module_dot_path in self.import_def_visits:
             v = self.import_def_visits[module_dot_path]
         else:
-            self.import_def_visits[module_dot_path] = None  # import cycle protect
+            self.import_def_visits[module_dot_path] = None  # cyclic import protection
             with self.mark_import():
                 v = _visit(module_dot_path, module_path, self.max_depth, self.depth + 1)
             self.import_def_visits[module_dot_path] = v
